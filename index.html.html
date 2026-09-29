@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mobil Optik Okuyucu</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { margin: 0; padding: 12px; background: #0b132b; color: #f8fafc; }
+        h1 { font-size: 1.15rem; text-align: center; margin: 4px 0 10px; color: #48cae4; }
+        .camera-container { position: relative; width: 100%; border-radius: 12px; overflow: hidden; background: #000; }
+        video { width: 100%; height: auto; display: block; object-fit: cover; }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+        button { padding: 12px; font-size: 0.9rem; font-weight: bold; border: none; border-radius: 10px; cursor: pointer; transition: 0.1s; }
+        button:active { transform: scale(0.97); }
+        .btn-scan { background: #0077b6; color: #fff; grid-column: span 2; font-size: 1.1rem; padding: 15px; }
+        .btn-key { background: #f39c12; color: #fff; grid-column: span 2; }
+        .btn-export { background: #2a9d8f; color: #fff; }
+        .btn-clear { background: #e63946; color: #fff; }
+        .result-card { margin-top: 12px; padding: 12px; border-radius: 10px; background: #1c2541; display: none; }
+        .result-card.ok { border-left: 5px solid #2a9d8f; }
+        .result-card.warn { border-left: 5px solid #e76f51; }
+        .history { margin-top: 16px; }
+        .history h3 { font-size: 0.9rem; color: #8d99ae; margin-bottom: 8px; display: flex; justify-content: space-between; }
+        .item { background: #1c2541; padding: 10px 12px; border-radius: 8px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+        .item-score { font-weight: bold; color: #48cae4; }
+
+        /* Modal (Cevap Anahtarı Ekranı) */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 100; overflow-y: auto; padding: 15px; }
+        .modal-content { background: #1c2541; border-radius: 14px; padding: 16px; max-width: 500px; margin: auto; }
+        .key-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding: 4px 0; border-bottom: 1px solid #2d3748; }
+        .opt-btn { width: 32px; height: 32px; border-radius: 50%; border: 1px solid #4a5568; background: #2d3748; color: #fff; font-weight: bold; cursor: pointer; padding: 0; }
+        .opt-btn.selected { background: #48cae4; color: #0b132b; border-color: #48cae4; }
+    </style>
+</head>
+<body>
+    <h1>📱 Mobil Optik Okuyucu</h1>
+
+    <div class="camera-container">
+        <video id="cam" autoplay playsinline></video>
+    </div>
+
+    <button class="btn-scan" id="btnScan" onclick="formuYakalaVeOku(false)">📸 ÖĞRENCİ FORMUNU OKU</button>
+
+    <div class="controls">
+        <button class="btn-key" onclick="anahtarModalAc()">🔑 Sınav Cevap Anahtarı (<span id="keySoruSayisi">0</span> Soru)</button>
+        <button class="btn-export" onclick="excelIndir()">📥 Excel İndir</button>
+        <button class="btn-clear" onclick="listeyiTemizle()">🗑️ Temizle</button>
+    </div>
+
+    <div class="result-card" id="resCard">
+        <div id="resTitle" style="font-weight:bold; font-size:1.05rem; margin-bottom:4px;"></div>
+        <div id="resBody" style="font-size:0.9rem; color:#cbd5e1;"></div>
+    </div>
+
+    <div class="history">
+        <h3>
+            <span>📋 Okunanlar</span>
+            <span id="kayitSayisi">0 Öğrenci</span>
+        </h3>
+        <div id="liste"></div>
+    </div>
+
+    <!-- Cevap Anahtarı Modalı -->
+    <div id="keyModal" class="modal">
+        <div class="modal-content">
+            <h2 style="font-size:1.1rem; margin-top:0; color:#f39c12;">🔑 Cevap Anahtarı</h2>
+            <p style="font-size:0.8rem; color:#a0aec0; margin-bottom:12px;">Doğru şıkları seçin veya boş bırakın. Dilerseniz kendi kağıdınızı kameraya tutup otomatik aktarın.</p>
+            
+            <button style="width:100%; background:#8e44ad; color:#fff; margin-bottom:14px;" onclick="kameraIleAnahtarOku()">📸 Bu Kağıdı Cevap Anahtarı Yap</button>
+
+            <div id="soruListesiContainer" style="max-height: 50vh; overflow-y: auto; padding-right: 5px;"></div>
+
+            <div style="display:flex; gap:10px; margin-top:14px;">
+                <button style="flex:1; background:#2a9d8f; color:#fff;" onclick="anahtariKaydet()">Kaydet</button>
+                <button style="flex:1; background:#4a5568; color:#fff;" onclick="anahtarModalKapat()">Kapat</button>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="procCanvas" style="display:none;"></canvas>
+
+    <script>
+        // Varsayılan ya da hafızadaki cevap anahtarı
+        let CEVAP_ANAHTARI = JSON.parse(localStorage.getItem("cevap_anahtari") || "{}");
+        let ogrenciKayitlari = JSON.parse(localStorage.getItem("ogrenci_notlari") || "[]");
+
+        const W_TARGET = 1420;
+        const H_TARGET = 950;
+        const num_x_start = 130;
+        const num_y_start = 160;
+        const col_w = 60;
+        const row_h = 52;
+        const opt_gap = 52;
+        const secenekler = ["A", "B", "C", "D", "E"];
+
+        const video = document.getElementById("cam");
+        const procCanvas = document.getElementById("procCanvas");
+        const resCard = document.getElementById("resCard");
+        const resTitle = document.getElementById("resTitle");
+        const resBody = document.getElementById("resBody");
+        const btnScan = document.getElementById("btnScan");
+
+        // Kamera Başlat
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+            }).then(stream => { video.srcObject = stream; })
+              .catch(err => { alert("Kamera açılamadı: " + err); });
+        }
+
+        function anahtarSayisiniGuncelle() {
+            const count = Object.keys(CEVAP_ANAHTARI).length;
+            document.getElementById("keySoruSayisi").innerText = count;
+        }
+
+        function listeyiGuncelle() {
+            document.getElementById("kayitSayisi").innerText = ogrenciKayitlari.length + " Öğrenci";
+            const container = document.getElementById("liste");
+            if (ogrenciKayitlari.length === 0) {
+                container.innerHTML = "<div style='color:#64748b; font-size:0.85rem;'>Henüz okunan kağıt yok.</div>";
+                return;
+            }
+            const toplamSoru = Object.keys(CEVAP_ANAHTARI).length || 1;
+            container.innerHTML = [...ogrenciKayitlari].reverse().map(o => `
+                <div class="item">
+                    <div>
+                        <strong>No: ${o.no}</strong>
+                        <div style="font-size:0.75rem; color:#8d99ae;">${o.tarih}</div>
+                    </div>
+                    <div class="item-score">${o.puan} Puan (${o.dogru}/${toplamSoru})</div>
+                </div>
+            `).join('');
+        }
+
+        // --- CEVAP ANAHTARI MODAL İŞLEMLERİ ---
+        function anahtarModalAc() {
+            const cont = document.getElementById("soruListesiContainer");
+            let html = "";
+            for (let q = 1; q <= 30; q++) {
+                const secili = CEVAP_ANAHTARI[q] || "";
+                html += `<div class="key-row">
+                    <span style="font-size:0.85rem; font-weight:bold; width:30px;">${q < 10 ? '0' + q : q}.</span>
+                    <div style="display:flex; gap:6px;">
+                        ${secenekler.map(opt => `
+                            <button type="button" class="opt-btn ${secili === opt ? 'selected' : ''}" 
+                                onclick="secenekTikla(${q}, '${opt}', this)">${opt}</button>
+                        `).join('')}
+                    </div>
+                </div>`;
+            }
+            cont.innerHTML = html;
+            document.getElementById("keyModal").style.display = "block";
+        }
+
+        function secenekTikla(q, opt, btn) {
+            const row = btn.parentElement;
+            if (btn.classList.contains("selected")) {
+                btn.classList.remove("selected");
+                delete CEVAP_ANAHTARI[q];
+            } else {
+                row.querySelectorAll(".opt-btn").forEach(b => b.classList.remove("selected"));
+                btn.classList.add("selected");
+                CEVAP_ANAHTARI[q] = opt;
+            }
+        }
+
+        function anahtariKaydet() {
+            localStorage.setItem("cevap_anahtari", JSON.stringify(CEVAP_ANAHTARI));
+            anahtarSayisiniGuncelle();
+            anahtarModalKapat();
+            alert("Cevap anahtarı kaydedildi!");
+        }
+
+        function anahtarModalKapat() {
+            document.getElementById("keyModal").style.display = "none";
+        }
+
+        function getDarkness(imgData, x, y, width) {
+            const idx = (Math.floor(y) * width + Math.floor(x)) * 4;
+            const gray = 0.299 * imgData.data[idx] + 0.587 * imgData.data[idx+1] + 0.114 * imgData.data[idx+2];
+            return 255 - gray;
+        }
+
+        function hucreKoyulukOrtalamasi(imgData, cx, cy, w) {
+            let total = 0, count = 0;
+            for (let dy = -14; dy <= 14; dy += 3) {
+                for (let dx = -14; dx <= 14; dx += 3) {
+                    total += getDarkness(imgData, cx + dx, cy + dy, w);
+                    count++;
+                }
+            }
+            return total / count;
+        }
+
+        // --- OPTİK OKUMA MOTORU ---
+        function formuYakalaVeOku(anahtarModu = false) {
+            if (!video.videoWidth) {
+                alert("Kamera henüz aktif değil!");
+                return;
+            }
+
+            if (!anahtarModu && Object.keys(CEVAP_ANAHTARI).length === 0) {
+                alert("Lütfen önce 'Sınav Cevap Anahtarı' belirleyin!");
+                anahtarModalAc();
+                return;
+            }
+
+            btnScan.disabled = true;
+            btnScan.innerText = "İşleniyor...";
+
+            procCanvas.width = W_TARGET;
+            procCanvas.height = H_TARGET;
+            const ctx = procCanvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, W_TARGET, H_TARGET);
+            const imgData = ctx.getImageData(0, 0, W_TARGET, H_TARGET);
+
+            // 1. ÖĞRENCİ NUMARASI
+            let okunan_no = "";
+            for (let col = 0; col < 6; col++) {
+                const cx = num_x_start + col * col_w;
+                let skorlar = [];
+                for (let digit = 0; digit < 10; digit++) {
+                    const cy = num_y_start + 82 + digit * row_h;
+                    skorlar.push({ koyuluk: hucreKoyulukOrtalamasi(imgData, cx, cy, W_TARGET), digit });
+                }
+                skorlar.sort((a, b) => b.koyuluk - a.koyuluk);
+                const enKoyu = skorlar[0];
+                const taban = (skorlar[2].koyuluk + skorlar[3].koyuluk + skorlar[4].koyuluk) / 3;
+                okunan_no += (enKoyu.koyuluk - taban > 22) ? enKoyu.digit.toString() : "_";
+            }
+
+            // 2. CEVAPLARI TARA
+            let dogruSayisi = 0;
+            const okunanCevaplar = {};
+
+            function sutunOku(basla, bitis, xOffset) {
+                for (let q = basla; q <= bitis; q++) {
+                    const cy = 155 + (q - basla) * row_h;
+                    let secenekSkorlar = [];
+                    for (let sIdx = 0; sIdx < 5; sIdx++) {
+                        const cx = xOffset + 75 + sIdx * opt_gap;
+                        secenekSkorlar.push({ koyuluk: hucreKoyulukOrtalamasi(imgData, cx, cy, W_TARGET), opt: secenekler[sIdx] });
+                    }
+                    secenekSkorlar.sort((a, b) => b.koyuluk - a.koyuluk);
+                    const enKoyu = secenekSkorlar[0];
+                    const taban = (secenekSkorlar[2].koyuluk + secenekSkorlar[3].koyuluk + secenekSkorlar[4].koyuluk) / 3;
+
+                    if (enKoyu.koyuluk - taban > 22) {
+                        okunanCevaplar[q] = enKoyu.opt;
+                        if (!anahtarModu && CEVAP_ANAHTARI[q] === enKoyu.opt) dogruSayisi++;
+                    }
+                }
+            }
+
+            sutunOku(1, 15, 560);
+            sutunOku(16, 30, 980);
+
+            btnScan.disabled = false;
+            btnScan.innerText = "📸 ÖĞRENCİ FORMUNU OKU";
+
+            // Eğer öğretmen kağıdı anahtar olarak okutulduysa:
+            if (anahtarModu) {
+                CEVAP_ANAHTARI = okunanCevaplar;
+                localStorage.setItem("cevap_anahtari", JSON.stringify(CEVAP_ANAHTARI));
+                anahtarSayisiniGuncelle();
+                anahtarModalKapat();
+                alert(`Harika! Kağıttan ${Object.keys(CEVAP_ANAHTARI).length} sorunun cevabı çıkarıldı ve anahtar olarak kaydedildi.`);
+                return;
+            }
+
+            // Normal Öğrenci Okuması
+            const toplamSoru = Object.keys(CEVAP_ANAHTARI).length;
+            const puan = Math.round((dogruSayisi / toplamSoru) * 100);
+
+            resCard.style.display = "block";
+            if (okunan_no.includes("_")) {
+                resCard.className = "result-card warn";
+                resTitle.innerText = "⚠️ Numara Eksik";
+                resTitle.style.color = "#e76f51";
+                resBody.innerHTML = `Okunan No: <b>${okunan_no}</b><br>Lütfen formu köşeler kadraja oturacak şekilde sabit tutun.`;
+            } else {
+                resCard.className = "result-card ok";
+                resTitle.innerText = "✅ Kaydedildi!";
+                resTitle.style.color = "#2a9d8f";
+                resBody.innerHTML = `<b>Öğrenci No:</b> ${okunan_no}<br><b>Puan:</b> ${puan} (${dogruSayisi}/${toplamSoru} Doğru)`;
+
+                const simdi = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+                ogrenciKayitlari.push({
+                    no: okunan_no,
+                    puan: puan,
+                    dogru: dogruSayisi,
+                    tarih: simdi
+                });
+                localStorage.setItem("ogrenci_notlari", JSON.stringify(ogrenciKayitlari));
+                listeyiGuncelle();
+            }
+        }
+
+        function kameraIleAnahtarOku() {
+            if (confirm("Kameradaki formu Cevap Anahtarı olarak kaydetmek istiyor musunuz?")) {
+                formuYakalaVeOku(true);
+            }
+        }
+
+        function excelIndir() {
+            if (ogrenciKayitlari.length === 0) {
+                alert("Henüz öğrenci kaydı yok!");
+                return;
+            }
+            const veri = ogrenciKayitlari.map((item, idx) => ({
+                "Sıra": idx + 1,
+                "Öğrenci No": item.no,
+                "Puan": item.puan,
+                "Doğru Sayısı": item.dogru,
+                "Saat": item.tarih
+            }));
+
+            const ws = XLSX.utils.json_to_sheet(veri);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Sınav Notları");
+            XLSX.writeFile(wb, "Optik_Sinav_Sonuclari.xlsx");
+        }
+
+        function listeyiTemizle() {
+            if (confirm("Bu sınıfa ait tüm okunan kayıtları silmek istiyor musunuz?")) {
+                ogrenciKayitlari = [];
+                localStorage.removeItem("ogrenci_notlari");
+                listeyiGuncelle();
+                resCard.style.display = "none";
+            }
+        }
+
+        anahtarSayisiniGuncelle();
+        listeyiGuncelle();
+    </script>
+</body>
+</html>
